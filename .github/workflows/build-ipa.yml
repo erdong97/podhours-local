@@ -33,6 +33,13 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGNING_IDENTITY="" \
             build 2>&1 | tee build.log
 
+      - name: Ad-hoc sign with entitlements
+        run: |
+          APP=$(find build/DD/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          codesign --force --sign - --entitlements PodHours/PodHours.entitlements --timestamp=none "$APP"
+          echo "--- embedded entitlements ---"
+          codesign -d --entitlements :- "$APP" 2>/dev/null || true
+
       - name: Package IPA
         run: |
           APP=$(find build/DD/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
