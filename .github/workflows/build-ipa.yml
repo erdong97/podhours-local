@@ -25,12 +25,13 @@ jobs:
 
       - name: Build unsigned app
         run: |
+          set -o pipefail
           xcodebuild -project PodHours.xcodeproj -scheme PodHours \
             -configuration Release -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build/DD \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGNING_IDENTITY="" \
-            build
+            build 2>&1 | tee build.log
 
       - name: Package IPA
         run: |
@@ -41,6 +42,23 @@ jobs:
           zip -qry PodHours.ipa Payload
           ls -lh PodHours.ipa
           unzip -l PodHours.ipa | head -30
+
+      - name: Push result to dist branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/distout
+          cp PodHours.ipa /tmp/distout/ 2>/dev/null || true
+          cp build.log /tmp/distout/ 2>/dev/null || true
+          echo "job status: ${{ job.status }} / commit: ${{ github.sha }} / $(date -u)" > /tmp/distout/build-status.txt
+          cd /tmp/distout
+          git init -b dist -q
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add -A
+          git commit -qm "build result for ${{ github.sha }}"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" dist
 
       - name: Publish IPA to release v1
         env:
