@@ -23,6 +23,11 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      - name: Verify stats engine
+        run: |
+          swiftc -O PodHours/Stats.swift Tests/StatsCheck/main.swift -o /tmp/statscheck
+          /tmp/statscheck | tee stats-check.log
+
       - name: Build unsigned app
         run: |
           set -o pipefail
@@ -58,6 +63,7 @@ jobs:
           mkdir -p /tmp/distout
           cp PodHours.ipa /tmp/distout/ 2>/dev/null || true
           cp build.log /tmp/distout/ 2>/dev/null || true
+          cp stats-check.log /tmp/distout/ 2>/dev/null || true
           echo "job status: ${{ job.status }} / commit: ${{ github.sha }} / $(date -u)" > /tmp/distout/build-status.txt
           cd /tmp/distout
           git init -b dist -q

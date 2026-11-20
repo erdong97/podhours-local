@@ -9,58 +9,48 @@ final class HealthKitReader {
 
     enum ReadError: Error {
         case unavailable
-        case queryFailed
     }
 
-    /// Requests read authorization (first run shows the system prompt),
-    /// then returns every headphone audio exposure sample as plain
-    /// dictionaries: s/e = epoch seconds, db = dB(A), plus device fields.
-    func readHeadphoneSamples(completion: @escaping (Result<[[String: Any]], Error>) -> Void) {
+    /// Requests read authorization (first run shows the system prompt;
+    /// later runs are silent), then returns every headphone audio
+    /// exposure sample.
+    func fetch() async throws -> [RawSample] {
         guard HKHealthStore.isHealthDataAvailable(),
               let type = HKQuantityType.quantityType(forIdentifier: .headphoneAudioExposure) else {
-            completion(.failure(ReadError.unavailable))
-            return
+            throw ReadError.unavailable
         }
         let readTypes: Set<HKObjectType> = [type]
         let shareTypes: Set<HKSampleType> = []
-        store.requestAuthorization(toShare: shareTypes, read: readTypes) { [weak self] _, _ in
-            // Whether the user allowed or denied is intentionally not
-            // visible to apps for reads; a denied read just returns
-            // zero samples from the query below.
-            self?.runQuery(type: type, completion: completion)
-        }
-    }
-
-    private func runQuery(type: HKQuantityType,
-                          completion: @escaping (Result<[[String: Any]], Error>) -> Void) {
-        let sort = [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]
-        let query = HKSampleQuery(sampleType: type,
-                                  predicate: nil,
-                                  limit: HKObjectQueryNoLimit,
-                                  sortDescriptors: sort) { _, samples, error in
-            if let error = error {
-                completion(.failure(error))
-                return
+        // An error here is real (e.g. missing entitlement after a
+        // re-sign stripped it) — surface it. A user *denial* is not an
+        // error: it just makes the query return zero samples, by
+        // HealthKit's privacy design.
+        try await store.requestAuthorization(toShare: shareTypes, read: readTypes)
+        return try await withCheckedThrowingContinuation { continuation in
+            let sort = [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]
+            let query = HKSampleQuery(sampleType: type,
+                                      predicate: nil,
+                                      limit: HKObjectQueryNoLimit,
+                                      sortDescriptors: sort) { _, samples, error in
+                if let error = error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                let unit = HKUnit.decibelAWeightedSoundPressureLevel()
+                let rows: [RawSample] = (samples as? [HKQuantitySample] ?? []).map { s in
+                    RawSample(
+                        start: s.startDate.timeIntervalSince1970,
+                        end: s.endDate.timeIntervalSince1970,
+                        db: (s.quantity.doubleValue(for: unit) * 10).rounded() / 10,
+                        name: s.device?.name ?? "",
+                        mfr: s.device?.manufacturer ?? "",
+                        model: s.device?.model ?? "",
+                        lid: s.device?.localIdentifier ?? ""
+                    )
+                }
+                continuation.resume(returning: rows)
             }
-            let quantitySamples = samples as? [HKQuantitySample] ?? []
-            let rows = quantitySamples.map { self.row(for: $0) }
-            completion(.success(rows))
+            store.execute(query)
         }
-        store.execute(query)
-    }
-
-    private func row(for sample: HKQuantitySample) -> [String: Any] {
-        let unit = HKUnit.decibelAWeightedSoundPressureLevel()
-        let db = (sample.quantity.doubleValue(for: unit) * 10).rounded() / 10
-        let device = sample.device
-        return [
-            "s": sample.startDate.timeIntervalSince1970,
-            "e": sample.endDate.timeIntervalSince1970,
-            "db": db,
-            "name": device?.name ?? "",
-            "mfr": device?.manufacturer ?? "",
-            "model": device?.model ?? "",
-            "lid": device?.localIdentifier ?? "",
-        ]
     }
 }
