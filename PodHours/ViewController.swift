@@ -13,7 +13,6 @@ class ViewController: UIViewController, WKUIDelegate, WKScriptMessageHandler {
 
     override func loadView() {
         let config = WKWebViewConfiguration()
-        config.allowUniversalAccessFromFileURLs = true
         config.userContentController.add(self, name: "podhealth")
         let wv = WKWebView(frame: .zero, configuration: config)
         wv.uiDelegate = self

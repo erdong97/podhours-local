@@ -21,34 +21,46 @@ final class HealthKitReader {
             completion(.failure(ReadError.unavailable))
             return
         }
-        store.requestAuthorization(toShare: [], read: [type]) { _, _ in
+        let readTypes: Set<HKObjectType> = [type]
+        let shareTypes: Set<HKSampleType> = []
+        store.requestAuthorization(toShare: shareTypes, read: readTypes) { [weak self] _, _ in
             // Whether the user allowed or denied is intentionally not
             // visible to apps for reads; a denied read just returns
             // zero samples from the query below.
-            let sort = [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]
-            let query = HKSampleQuery(sampleType: type,
-                                      predicate: nil,
-                                      limit: HKObjectQueryNoLimit,
-                                      sortDescriptors: sort) { _, samples, error in
-                if let error = error {
-                    completion(.failure(error))
-                    return
-                }
-                let unit = HKUnit.decibelAWeightedSoundPressureLevel()
-                let rows: [[String: Any]] = (samples as? [HKQuantitySample] ?? []).map { s in
-                    [
-                        "s": s.startDate.timeIntervalSince1970,
-                        "e": s.endDate.timeIntervalSince1970,
-                        "db": (s.quantity.doubleValue(for: unit) * 10).rounded() / 10,
-                        "name": s.device?.name ?? "",
-                        "mfr": s.device?.manufacturer ?? "",
-                        "model": s.device?.model ?? "",
-                        "lid": s.device?.localIdentifier ?? "",
-                    ]
-                }
-                completion(.success(rows))
-            }
-            self.store.execute(query)
+            self?.runQuery(type: type, completion: completion)
         }
+    }
+
+    private func runQuery(type: HKQuantityType,
+                          completion: @escaping (Result<[[String: Any]], Error>) -> Void) {
+        let sort = [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]
+        let query = HKSampleQuery(sampleType: type,
+                                  predicate: nil,
+                                  limit: HKObjectQueryNoLimit,
+                                  sortDescriptors: sort) { _, samples, error in
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
+            let quantitySamples = samples as? [HKQuantitySample] ?? []
+            let rows = quantitySamples.map { self.row(for: $0) }
+            completion(.success(rows))
+        }
+        store.execute(query)
+    }
+
+    private func row(for sample: HKQuantitySample) -> [String: Any] {
+        let unit = HKUnit.decibelAWeightedSoundPressureLevel()
+        let db = (sample.quantity.doubleValue(for: unit) * 10).rounded() / 10
+        let device = sample.device
+        return [
+            "s": sample.startDate.timeIntervalSince1970,
+            "e": sample.endDate.timeIntervalSince1970,
+            "db": db,
+            "name": device?.name ?? "",
+            "mfr": device?.manufacturer ?? "",
+            "model": device?.model ?? "",
+            "lid": device?.localIdentifier ?? "",
+        ]
     }
 }
