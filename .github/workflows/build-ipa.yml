@@ -1,0 +1,52 @@
+name: Build IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate app icon
+        run: python3 tools/make_icon.py PodHours/Assets.xcassets/AppIcon.appiconset/icon-1024.png
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build unsigned app
+        run: |
+          xcodebuild -project PodHours.xcodeproj -scheme PodHours \
+            -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DD \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGNING_IDENTITY="" \
+            build
+
+      - name: Package IPA
+        run: |
+          APP=$(find build/DD/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          echo "App: $APP"
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry PodHours.ipa Payload
+          ls -lh PodHours.ipa
+          unzip -l PodHours.ipa | head -30
+
+      - name: Publish IPA to release v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete v1 --yes || true
+          gh release create v1 PodHours.ipa \
+            --title "PodHours 本地版 IPA" \
+            --notes "未签名 IPA：用你自己的 Apple ID 自签后安装（全能签 / Sideloadly / iLoader 等）。App 完全离线，内置页面无任何联网代码。"
