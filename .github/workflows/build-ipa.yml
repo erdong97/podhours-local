@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Generate app icon
-        run: python3 tools/make_icon.py PodHours/Assets.xcassets/AppIcon.appiconset/icon-1024.png
+        run: python3 tools/make_icon.py PodsStats/Assets.xcassets/AppIcon.appiconset/icon-1024.png
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -25,13 +25,13 @@ jobs:
 
       - name: Verify stats engine
         run: |
-          swiftc -O PodHours/Stats.swift Tests/StatsCheck/main.swift -o /tmp/statscheck
+          swiftc -O PodsStats/Stats.swift Tests/StatsCheck/main.swift -o /tmp/statscheck
           /tmp/statscheck | tee stats-check.log
 
       - name: Build unsigned app
         run: |
           set -o pipefail
-          xcodebuild -project PodHours.xcodeproj -scheme PodHours \
+          xcodebuild -project PodsStats.xcodeproj -scheme PodsStats \
             -configuration Release -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build/DD \
@@ -41,7 +41,7 @@ jobs:
       - name: Ad-hoc sign with entitlements
         run: |
           APP=$(find build/DD/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
-          codesign --force --sign - --entitlements PodHours/PodHours.entitlements --timestamp=none "$APP"
+          codesign --force --sign - --entitlements PodsStats/PodsStats.entitlements --timestamp=none "$APP"
           echo "--- embedded entitlements ---"
           codesign -d --entitlements :- "$APP" 2>/dev/null || true
 
@@ -51,9 +51,9 @@ jobs:
           echo "App: $APP"
           mkdir -p Payload
           cp -R "$APP" Payload/
-          zip -qry PodHours.ipa Payload
-          ls -lh PodHours.ipa
-          unzip -l PodHours.ipa | head -30
+          zip -qry PodsStats.ipa Payload
+          ls -lh PodsStats.ipa
+          unzip -l PodsStats.ipa | head -30
 
       - name: Push result to dist branch
         if: always()
@@ -61,7 +61,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p /tmp/distout
-          cp PodHours.ipa /tmp/distout/ 2>/dev/null || true
+          cp PodsStats.ipa /tmp/distout/ 2>/dev/null || true
           cp build.log /tmp/distout/ 2>/dev/null || true
           cp stats-check.log /tmp/distout/ 2>/dev/null || true
           echo "job status: ${{ job.status }} / commit: ${{ github.sha }} / $(date -u)" > /tmp/distout/build-status.txt
@@ -78,6 +78,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete v1 --yes || true
-          gh release create v1 PodHours.ipa \
-            --title "PodHours 本地版 IPA" \
-            --notes "未签名 IPA：用你自己的 Apple ID 自签后安装（全能签 / Sideloadly / iLoader 等）。App 完全离线，内置页面无任何联网代码。"
+          gh release create v1 PodsStats.ipa \
+            --title "PodsStats 个人版 IPA" \
+            --notes "未签名 IPA：用你自己的证书自签后安装（全能签 / Sideloadly / iLoader 等）。App 完全离线，无任何联网代码。"

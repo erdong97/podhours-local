@@ -1,34 +1,34 @@
-name: PodHours
+name: PodsStats
 options:
   bundleIdPrefix: com.erdong97
   deploymentTarget:
     iOS: "16.0"
 targets:
-  PodHours:
+  PodsStats:
     type: application
     platform: iOS
     sources:
-      - path: PodHours
+      - path: PodsStats
     info:
-      path: PodHours/Info.plist
+      path: PodsStats/Info.plist
       properties:
-        CFBundleDisplayName: PodHours
-        NSHealthShareUsageDescription: "读取你的耳机音频暴露记录，统计每副耳机的聆听时长。所有数据只在本机处理，不联网、不上传。"
+        CFBundleDisplayName: PodsStats
+        NSHealthShareUsageDescription: "读取你的耳机音频暴露记录，统计每副耳机的佩戴时长与音量。所有数据只在本机处理，不联网、不上传。"
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
     entitlements:
-      path: PodHours/PodHours.entitlements
+      path: PodsStats/PodsStats.entitlements
       properties:
         com.apple.developer.healthkit: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.erdong97.podhours
+        PRODUCT_BUNDLE_IDENTIFIER: com.erdong97.podsstats
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "5.0"
     scheme:
       build:
         targets:
-          PodHours: all
+          PodsStats: all

@@ -1,10 +1,11 @@
 import SwiftUI
 
 @main
-struct PodHoursApp: App {
+struct PodsStatsApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .preferredColorScheme(.dark)
         }
     }
 }

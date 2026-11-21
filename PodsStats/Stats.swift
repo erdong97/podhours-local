@@ -13,8 +13,33 @@ struct RawSample {
 
 struct SessionInfo {
     var start: Date
+    var end: Date
     var duration: Double
     var deviceName: String
+}
+
+/// Per-day / per-hour aggregates and personal records for one scope
+/// (a single device, or all devices combined).
+struct LibraryStats {
+    /// Local day ("yyyy-MM-dd") -> listening seconds.
+    var dailyTotals: [String: Double] = [:]
+    /// Local day -> sum of duration * 10^(dB/10), for time-weighted dB.
+    var dailyEnergy: [String: Double] = [:]
+    /// Local day -> counted sessions starting that day, sorted by start.
+    var dailySessions: [String: [SessionInfo]] = [:]
+    /// Hour of day 0...23 -> listening seconds.
+    var hourlyTotals: [Int: Double] = [:]
+    /// Volume bucket label -> listening seconds, in display order.
+    var volumeBuckets: [(label: String, seconds: Double)] = []
+    var longestDay: (day: String, seconds: Double)? = nil
+    var longestSession: SessionInfo? = nil
+    var longestStreak: (days: Int, from: String, to: String)? = nil
+    var bestMonth: (month: String, seconds: Double)? = nil
+
+    func avgDb(onDay key: String) -> Double? {
+        guard let e = dailyEnergy[key], let s = dailyTotals[key], s > 0 else { return nil }
+        return 10 * log10(e / s)
+    }
 }
 
 struct DeviceStats {
@@ -31,6 +56,7 @@ struct DeviceStats {
     var first: Date? = nil
     var last: Date? = nil
     var monthly: [(month: String, seconds: Double)] = []
+    var library: LibraryStats = LibraryStats()
     // Internal aggregates carried for building the combined view.
     var _days: Set<String> = []
     var _energy: Double = 0
@@ -44,23 +70,8 @@ struct DeviceStats {
     }
 }
 
-/// Cross-device aggregates used by the Trends and Records tabs.
-struct LibraryStats {
-    /// Local day ("yyyy-MM-dd") -> listening seconds (all devices summed).
-    var dailyTotals: [String: Double] = [:]
-    /// Hour of day 0...23 -> listening seconds.
-    var hourlyTotals: [Int: Double] = [:]
-    /// Volume bucket label -> listening seconds, in display order.
-    var volumeBuckets: [(label: String, seconds: Double)] = []
-    var longestDay: (day: String, seconds: Double)? = nil
-    var longestSession: SessionInfo? = nil
-    var longestStreak: (days: Int, from: String, to: String)? = nil
-    var bestMonth: (month: String, seconds: Double)? = nil
-}
-
 /// Listening-statistics engine. Pure Foundation so it can be compiled
-/// and unit-checked on its own (see Tests/StatsCheck). Semantics match
-/// the verified web/Python versions exactly:
+/// and unit-checked on its own (see Tests/StatsCheck). Semantics:
 /// - group samples by Bluetooth id, then merge groups that share
 ///   name+manufacturer+model into one headphone
 /// - sort, drop exact (start,end) duplicates, sweep once: each sample
@@ -89,8 +100,6 @@ struct StatsEngine {
     struct Computed {
         var devices: [DeviceStats]
         var combined: DeviceStats
-        var library: LibraryStats
-        var portionsByDevice: [String: [Portion]]
     }
 
     func compute(samples: [RawSample]) -> Computed {
@@ -115,29 +124,26 @@ struct StatsEngine {
         }
 
         var devices: [DeviceStats] = []
-        var portionsByDevice: [String: [Portion]] = [:]
+        var allPortions: [Portion] = []
         var allSessions: [SessionInfo] = []
         for (_, g) in merged {
             let parts = portions(for: g.samples)
             let displayName = !g.name.isEmpty ? g.name : (!g.model.isEmpty ? g.model : "未知耳机")
-            portionsByDevice[displayName] = parts
             var st = DeviceStats(
                 displayName: displayName,
                 subtitle: [g.mfr, g.model].filter { !$0.isEmpty }.joined(separator: " · ")
             )
             let sessions = fill(&st, from: parts)
+            st.library = buildLibrary(portions: parts, sessions: sessions, monthlyMap: st._monthlyMap)
             devices.append(st)
-            allSessions.append(contentsOf: sessions.map {
-                SessionInfo(start: $0.start, duration: $0.duration, deviceName: displayName)
-            })
+            allPortions.append(contentsOf: parts)
+            allSessions.append(contentsOf: sessions)
         }
         devices.sort { $0.totalSeconds > $1.totalSeconds }
-        let combined = combine(devices)
-        let library = libraryStats(portionsByDevice: portionsByDevice,
-                                   sessions: allSessions,
-                                   monthlyMap: combined._monthlyMap)
-        return Computed(devices: devices, combined: combined,
-                        library: library, portionsByDevice: portionsByDevice)
+        var combined = combine(devices)
+        combined.library = buildLibrary(portions: allPortions, sessions: allSessions,
+                                        monthlyMap: combined._monthlyMap)
+        return Computed(devices: devices, combined: combined)
     }
 
     private func portions(for samples: [RawSample]) -> [Portion] {
@@ -211,8 +217,11 @@ struct StatsEngine {
         st._days = days
         st._energy = energy
         st._monthlyMap = monthly
-        return effective.map { SessionInfo(start: Date(timeIntervalSince1970: $0.start),
-                                           duration: $0.duration, deviceName: st.displayName) }
+        return effective.map {
+            SessionInfo(start: Date(timeIntervalSince1970: $0.start),
+                        end: Date(timeIntervalSince1970: $0.start + $0.duration),
+                        duration: $0.duration, deviceName: st.displayName)
+        }
     }
 
     private func combine(_ devices: [DeviceStats]) -> DeviceStats {
@@ -245,52 +254,58 @@ struct StatsEngine {
         return st
     }
 
-    // MARK: - Library aggregates (trends & records)
+    // MARK: - Library aggregates
 
-    private func libraryStats(portionsByDevice: [String: [Portion]],
-                              sessions: [SessionInfo],
+    private func buildLibrary(portions: [Portion], sessions: [SessionInfo],
                               monthlyMap: [String: Double]) -> LibraryStats {
         var lib = LibraryStats()
         var buckets: [(label: String, seconds: Double)] = [
             ("<60 dB", 0), ("60–70", 0), ("70–80", 0),
             ("80–85", 0), ("85–90", 0), ("≥90 dB", 0),
         ]
-        for (_, parts) in portionsByDevice {
-            for p in parts {
-                // daily totals: split at midnights
-                var t = p.start
-                while t < p.end {
-                    let dayStart = calendar.startOfDay(for: Date(timeIntervalSince1970: t))
-                    let nextMidnight = calendar.date(byAdding: .day, value: 1, to: dayStart)!.timeIntervalSince1970
-                    let segEnd = min(p.end, nextMidnight)
-                    lib.dailyTotals[dayKey(Date(timeIntervalSince1970: t)), default: 0] += segEnd - t
-                    t = segEnd
-                }
-                // hourly totals: split at hour boundaries
-                t = p.start
-                while t < p.end {
-                    let d = Date(timeIntervalSince1970: t)
-                    let hour = calendar.component(.hour, from: d)
-                    let hourStart = calendar.date(from: calendar.dateComponents([.year, .month, .day, .hour], from: d))!
-                    let nextHour = hourStart.addingTimeInterval(3600).timeIntervalSince1970
-                    let segEnd = min(p.end, nextHour)
-                    lib.hourlyTotals[hour, default: 0] += segEnd - t
-                    t = segEnd
-                }
-                // volume buckets by the portion's dB
-                let idx: Int
-                switch p.db {
-                case ..<60: idx = 0
-                case ..<70: idx = 1
-                case ..<80: idx = 2
-                case ..<85: idx = 3
-                case ..<90: idx = 4
-                default: idx = 5
-                }
-                buckets[idx].seconds += p.duration
+        for p in portions {
+            let energyPerSec = pow(10.0, p.db / 10.0)
+            // daily totals + energy: split at midnights
+            var t = p.start
+            while t < p.end {
+                let dayStart = calendar.startOfDay(for: Date(timeIntervalSince1970: t))
+                let nextMidnight = calendar.date(byAdding: .day, value: 1, to: dayStart)!.timeIntervalSince1970
+                let segEnd = min(p.end, nextMidnight)
+                let key = dayKey(Date(timeIntervalSince1970: t))
+                lib.dailyTotals[key, default: 0] += segEnd - t
+                lib.dailyEnergy[key, default: 0] += (segEnd - t) * energyPerSec
+                t = segEnd
             }
+            // hourly totals: split at hour boundaries
+            t = p.start
+            while t < p.end {
+                let d = Date(timeIntervalSince1970: t)
+                let hour = calendar.component(.hour, from: d)
+                let hourStart = calendar.date(from: calendar.dateComponents([.year, .month, .day, .hour], from: d))!
+                let nextHour = hourStart.addingTimeInterval(3600).timeIntervalSince1970
+                let segEnd = min(p.end, nextHour)
+                lib.hourlyTotals[hour, default: 0] += segEnd - t
+                t = segEnd
+            }
+            // volume buckets by the portion's dB
+            let idx: Int
+            switch p.db {
+            case ..<60: idx = 0
+            case ..<70: idx = 1
+            case ..<80: idx = 2
+            case ..<85: idx = 3
+            case ..<90: idx = 4
+            default: idx = 5
+            }
+            buckets[idx].seconds += p.duration
         }
         lib.volumeBuckets = buckets
+        for s in sessions {
+            lib.dailySessions[dayKey(s.start), default: []].append(s)
+        }
+        for k in lib.dailySessions.keys {
+            lib.dailySessions[k]?.sort { $0.start < $1.start }
+        }
         if let best = lib.dailyTotals.max(by: { $0.value < $1.value }) {
             lib.longestDay = (best.key, best.value)
         }

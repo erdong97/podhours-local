@@ -2,7 +2,7 @@ import Foundation
 
 // Standalone check of the stats engine against the same synthetic
 // vectors the web/Python versions were verified with. Run in CI with:
-//   swiftc -O PodHours/Stats.swift Tests/StatsCheck/main.swift -o statscheck
+//   swiftc -O PodsStats/Stats.swift Tests/StatsCheck/main.swift -o statscheck
 
 var failures = 0
 func check(_ name: String, _ ok: Bool, _ detail: String = "") {
@@ -38,7 +38,7 @@ let engine = StatsEngine(timeZone: TimeZone(secondsFromGMT: 8 * 3600)!)
 let computed = engine.compute(samples: samples)
 let devices = computed.devices
 let combined = computed.combined
-let library = computed.library
+let library = combined.library
 
 check("device count == 2", devices.count == 2, "got \(devices.count)")
 let airpods = devices.first { $0.displayName == "AirPods Pro" }
@@ -85,6 +85,24 @@ check("Volume buckets sum 12000s", approx(bucketSum, 12000), "got \(bucketSum)")
 check("Bucket 60-70 == 2970s", approx(library.volumeBuckets[1].seconds, 2970), "got \(library.volumeBuckets[1].seconds)")
 check("Bucket 70-80 == 7200s", approx(library.volumeBuckets[2].seconds, 7200), "got \(library.volumeBuckets[2].seconds)")
 check("Combined avg session 3990s", approx(combined.avgSessionSeconds, 3990), "got \(combined.avgSessionSeconds)")
+
+// Per-device library + day detail (new app structure)
+if let a = airpods {
+    let al = a.library
+    check("AirPods daily sum 10800s", approx(al.dailyTotals.values.reduce(0, +), 10800),
+          "got \(al.dailyTotals.values.reduce(0, +))")
+    check("AirPods longest day 2024-01-01 / 7170s",
+          al.longestDay?.day == "2024-01-01" && approx(al.longestDay?.seconds ?? -1, 7170),
+          "got \(String(describing: al.longestDay))")
+    check("AirPods streak 3 days", al.longestStreak?.days == 3, "got \(String(describing: al.longestStreak?.days))")
+    check("AirPods Jan1 sessions == 1", (al.dailySessions["2024-01-01"] ?? []).count == 1,
+          "got \((al.dailySessions["2024-01-01"] ?? []).count)")
+    check("AirPods hour 20 == 3600s", approx(al.hourlyTotals[20] ?? -1, 3600), "got \(al.hourlyTotals[20] ?? -1)")
+}
+check("Jan1 combined avg dB 74.8", approx(library.avgDb(onDay: "2024-01-01") ?? -1, 74.8, tol: 0.15),
+      "got \(library.avgDb(onDay: "2024-01-01") ?? -1)")
+let allDaySessions = library.dailySessions.values.reduce(0) { $0 + $1.count }
+check("Sessions across days == 3", allDaySessions == 3, "got \(allDaySessions)")
 
 print(failures == 0 ? "ALL CHECKS PASSED" : "\(failures) CHECK(S) FAILED")
 exit(failures == 0 ? 0 : 1)

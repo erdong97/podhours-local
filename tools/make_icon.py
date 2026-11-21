@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate a 1024x1024 app icon PNG using only the Python standard library.
-Dark navy gradient background, a headphone band arc and two ear cups in a
-cyan-to-violet gradient. Run in CI before the Xcode build."""
+Blue gradient background with a bold white "P", PodsStats style.
+Run in CI before the Xcode build."""
 import math
 import struct
 import sys
@@ -23,20 +23,17 @@ def in_rounded_rect(x, y, x0, y0, x1, y1, r):
 
 
 def pixel(x, y):
-    # background: vertical gradient
-    bg = lerp((7, 10, 20), (27, 34, 66), y / SIZE)
-    accent = lerp((125, 211, 252), (167, 139, 250), x / SIZE)
+    # background: blue vertical gradient
+    bg = lerp((24, 88, 216), (66, 152, 255), y / SIZE)
+    white = (255, 255, 255)
 
-    # headphone band: ring segment centred below middle, upper half only
-    cx, cy = SIZE / 2, 590
-    dist = math.hypot(x - cx, y - cy)
-    if 235 <= dist <= 292 and y < cy - 40:
-        return accent
-    # ear cups
-    if in_rounded_rect(x, y, 218, 470, 368, 760, 62):
-        return accent
-    if in_rounded_rect(x, y, 656, 470, 806, 760, 62):
-        return accent
+    # "P" stem
+    if 372 <= x <= 468 and 236 <= y <= 788:
+        return white
+    # "P" bowl: ring to the right of the stem
+    dist = math.hypot(x - 566, y - 388)
+    if 76 <= dist <= 152 and x >= 372:
+        return white
     return bg
 
 
