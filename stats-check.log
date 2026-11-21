@@ -1,0 +1,36 @@
+PASS device count == 2 got 2
+PASS AirPods found 
+PASS AirPods total 10800s got 10800.0
+PASS AirPods sessions == 2 got 2
+PASS AirPods longest 7170s got 7170.0
+PASS AirPods avg 75.2 dB got 75.24819073419792
+PASS AirPods >=80 1830s got 1830.0
+PASS AirPods active days == 3 got 3
+PASS AirPods daily avg 3600s got 3600.0
+PASS EarPods total 1200s got 1200.0
+PASS EarPods avg 65.0 dB got 65.0
+PASS Combined total 12000s got 12000.0
+PASS Combined avg 74.8 dB got 74.83595294567513
+PASS Combined sessions == 3 got 3
+PASS Combined active days == 4 got 4
+PASS Combined daily avg 2400s got 2400.0
+PASS Daily totals sum 12000s got 12000.0
+PASS Longest day 2024-01-01 / 7170s got Optional((day: "2024-01-01", seconds: 7170.0))
+PASS Longest session 7170s on AirPods got Optional(7170.0)
+PASS Longest streak 3 days got Optional(3)
+PASS Best month 2024-01 / 12000s got Optional((month: "2024-01", seconds: 12000.0))
+PASS Hourly totals sum 12000s got 12000.0
+PASS Hour 10 == 3600s got 3600.0
+PASS Hour 11 == 3570s got 3570.0
+PASS Volume buckets sum 12000s got 12000.0
+PASS Bucket 60-70 == 2970s got 2970.0
+PASS Bucket 70-80 == 7200s got 7200.0
+PASS Combined avg session 3990s got 3990.0
+PASS AirPods daily sum 10800s got 10800.0
+PASS AirPods longest day 2024-01-01 / 7170s got Optional((day: "2024-01-01", seconds: 7170.0))
+PASS AirPods streak 3 days got Optional(3)
+PASS AirPods Jan1 sessions == 1 got 1
+PASS AirPods hour 20 == 3600s got 3600.0
+PASS Jan1 combined avg dB 74.8 got 74.82478895455161
+PASS Sessions across days == 3 got 3
+ALL CHECKS PASSED
