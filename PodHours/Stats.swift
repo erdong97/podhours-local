@@ -11,6 +11,12 @@ struct RawSample {
     var lid: String
 }
 
+struct SessionInfo {
+    var start: Date
+    var duration: Double
+    var deviceName: String
+}
+
 struct DeviceStats {
     var displayName: String
     var subtitle: String
@@ -18,13 +24,14 @@ struct DeviceStats {
     var avgDb: Double = 0
     var ge80Seconds: Double = 0
     var sessionCount: Int = 0
+    var sessionTotalSeconds: Double = 0
     var longestSession: Double = 0
     var activeDayCount: Int = 0
     var dailyAvgSeconds: Double = 0
     var first: Date? = nil
     var last: Date? = nil
     var monthly: [(month: String, seconds: Double)] = []
-    // Internal aggregates carried for building the combined card.
+    // Internal aggregates carried for building the combined view.
     var _days: Set<String> = []
     var _energy: Double = 0
     var _monthlyMap: [String: Double] = [:]
@@ -32,6 +39,23 @@ struct DeviceStats {
     var ge80Percent: Double {
         totalSeconds > 0 ? ge80Seconds / totalSeconds * 100 : 0
     }
+    var avgSessionSeconds: Double {
+        sessionCount > 0 ? sessionTotalSeconds / Double(sessionCount) : 0
+    }
+}
+
+/// Cross-device aggregates used by the Trends and Records tabs.
+struct LibraryStats {
+    /// Local day ("yyyy-MM-dd") -> listening seconds (all devices summed).
+    var dailyTotals: [String: Double] = [:]
+    /// Hour of day 0...23 -> listening seconds.
+    var hourlyTotals: [Int: Double] = [:]
+    /// Volume bucket label -> listening seconds, in display order.
+    var volumeBuckets: [(label: String, seconds: Double)] = []
+    var longestDay: (day: String, seconds: Double)? = nil
+    var longestSession: SessionInfo? = nil
+    var longestStreak: (days: Int, from: String, to: String)? = nil
+    var bestMonth: (month: String, seconds: Double)? = nil
 }
 
 /// Listening-statistics engine. Pure Foundation so it can be compiled
@@ -55,14 +79,21 @@ struct StatsEngine {
         calendar = cal
     }
 
-    private struct Portion {
+    struct Portion {
         var start: TimeInterval
         var end: TimeInterval
         var db: Double
         var duration: Double { end - start }
     }
 
-    func compute(samples: [RawSample]) -> (devices: [DeviceStats], combined: DeviceStats) {
+    struct Computed {
+        var devices: [DeviceStats]
+        var combined: DeviceStats
+        var library: LibraryStats
+        var portionsByDevice: [String: [Portion]]
+    }
+
+    func compute(samples: [RawSample]) -> Computed {
         // 1) group by lid (fallback: identity fields), then merge by name|mfr|model
         var byLid: [String: [RawSample]] = [:]
         var meta: [String: (name: String, mfr: String, model: String)] = [:]
@@ -84,11 +115,29 @@ struct StatsEngine {
         }
 
         var devices: [DeviceStats] = []
+        var portionsByDevice: [String: [Portion]] = [:]
+        var allSessions: [SessionInfo] = []
         for (_, g) in merged {
-            devices.append(deviceStats(name: g.name, mfr: g.mfr, model: g.model, samples: g.samples))
+            let parts = portions(for: g.samples)
+            let displayName = !g.name.isEmpty ? g.name : (!g.model.isEmpty ? g.model : "未知耳机")
+            portionsByDevice[displayName] = parts
+            var st = DeviceStats(
+                displayName: displayName,
+                subtitle: [g.mfr, g.model].filter { !$0.isEmpty }.joined(separator: " · ")
+            )
+            let sessions = fill(&st, from: parts)
+            devices.append(st)
+            allSessions.append(contentsOf: sessions.map {
+                SessionInfo(start: $0.start, duration: $0.duration, deviceName: displayName)
+            })
         }
         devices.sort { $0.totalSeconds > $1.totalSeconds }
-        return (devices, combine(devices))
+        let combined = combine(devices)
+        let library = libraryStats(portionsByDevice: portionsByDevice,
+                                   sessions: allSessions,
+                                   monthlyMap: combined._monthlyMap)
+        return Computed(devices: devices, combined: combined,
+                        library: library, portionsByDevice: portionsByDevice)
     }
 
     private func portions(for samples: [RawSample]) -> [Portion] {
@@ -110,36 +159,30 @@ struct StatsEngine {
         return result
     }
 
-    private func deviceStats(name: String, mfr: String, model: String, samples: [RawSample]) -> DeviceStats {
-        let parts = portions(for: samples)
-        var st = DeviceStats(
-            displayName: !name.isEmpty ? name : (!model.isEmpty ? model : "未知耳机"),
-            subtitle: [mfr, model].filter { !$0.isEmpty }.joined(separator: " · ")
-        )
-        fill(&st, from: parts)
-        return st
-    }
-
-    private func fill(_ st: inout DeviceStats, from parts: [Portion]) {
-        guard let firstPart = parts.first else { return }
+    /// Fills a DeviceStats from its portions; returns the counted sessions.
+    private func fill(_ st: inout DeviceStats, from parts: [Portion]) -> [SessionInfo] {
+        guard let firstPart = parts.first else { return [] }
         var energy = 0.0
         var days = Set<String>()
         var monthly: [String: Double] = [:]
-        // sessions
-        var sessions: [Double] = []
+        var rawSessions: [(start: TimeInterval, duration: Double)] = []
         var current: Double = 0
+        var currentStart: TimeInterval = firstPart.start
         var prevEnd: TimeInterval? = nil
         for p in parts {
             st.totalSeconds += p.duration
             energy += p.duration * pow(10.0, p.db / 10.0)
             if p.db >= 80 { st.ge80Seconds += p.duration }
             if let pe = prevEnd, p.start - pe > 180 {
-                sessions.append(current)
+                rawSessions.append((currentStart, current))
                 current = 0
+                currentStart = p.start
+            }
+            if current == 0 && (prevEnd == nil || p.start - prevEnd! > 180) {
+                currentStart = p.start
             }
             current += p.duration
             prevEnd = p.end
-            // active days: every local date this portion touches
             var d = calendar.startOfDay(for: Date(timeIntervalSince1970: p.start))
             let lastDay = calendar.startOfDay(for: Date(timeIntervalSince1970: p.end - 0.001))
             while d <= lastDay {
@@ -148,11 +191,12 @@ struct StatsEngine {
             }
             monthly[monthKey(Date(timeIntervalSince1970: p.start)), default: 0] += p.duration
         }
-        if current > 0 { sessions.append(current) }
-        let counted = sessions.filter { $0 >= 60 }
-        let effective = counted.isEmpty ? sessions : counted
+        if current > 0 { rawSessions.append((currentStart, current)) }
+        let counted = rawSessions.filter { $0.duration >= 60 }
+        let effective = counted.isEmpty ? rawSessions : counted
         st.sessionCount = effective.count
-        st.longestSession = effective.max() ?? 0
+        st.sessionTotalSeconds = effective.reduce(0) { $0 + $1.duration }
+        st.longestSession = effective.map(\.duration).max() ?? 0
         st.avgDb = st.totalSeconds > 0 ? 10 * log10(energy / st.totalSeconds) : 0
         st.activeDayCount = days.count
         st.first = Date(timeIntervalSince1970: firstPart.start)
@@ -167,6 +211,8 @@ struct StatsEngine {
         st._days = days
         st._energy = energy
         st._monthlyMap = monthly
+        return effective.map { SessionInfo(start: Date(timeIntervalSince1970: $0.start),
+                                           duration: $0.duration, deviceName: st.displayName) }
     }
 
     private func combine(_ devices: [DeviceStats]) -> DeviceStats {
@@ -179,6 +225,7 @@ struct StatsEngine {
             energy += d._energy
             st.ge80Seconds += d.ge80Seconds
             st.sessionCount += d.sessionCount
+            st.sessionTotalSeconds += d.sessionTotalSeconds
             st.longestSession = max(st.longestSession, d.longestSession)
             days.formUnion(d._days)
             for (k, v) in d._monthlyMap { monthly[k, default: 0] += v }
@@ -194,12 +241,99 @@ struct StatsEngine {
             st.dailyAvgSeconds = st.totalSeconds / Double(max(span, 1))
         }
         st.monthly = monthly.map { (month: $0.key, seconds: $0.value) }.sorted { $0.month < $1.month }
+        st._monthlyMap = monthly
         return st
+    }
+
+    // MARK: - Library aggregates (trends & records)
+
+    private func libraryStats(portionsByDevice: [String: [Portion]],
+                              sessions: [SessionInfo],
+                              monthlyMap: [String: Double]) -> LibraryStats {
+        var lib = LibraryStats()
+        var buckets: [(label: String, seconds: Double)] = [
+            ("<60 dB", 0), ("60–70", 0), ("70–80", 0),
+            ("80–85", 0), ("85–90", 0), ("≥90 dB", 0),
+        ]
+        for (_, parts) in portionsByDevice {
+            for p in parts {
+                // daily totals: split at midnights
+                var t = p.start
+                while t < p.end {
+                    let dayStart = calendar.startOfDay(for: Date(timeIntervalSince1970: t))
+                    let nextMidnight = calendar.date(byAdding: .day, value: 1, to: dayStart)!.timeIntervalSince1970
+                    let segEnd = min(p.end, nextMidnight)
+                    lib.dailyTotals[dayKey(Date(timeIntervalSince1970: t)), default: 0] += segEnd - t
+                    t = segEnd
+                }
+                // hourly totals: split at hour boundaries
+                t = p.start
+                while t < p.end {
+                    let d = Date(timeIntervalSince1970: t)
+                    let hour = calendar.component(.hour, from: d)
+                    let hourStart = calendar.date(from: calendar.dateComponents([.year, .month, .day, .hour], from: d))!
+                    let nextHour = hourStart.addingTimeInterval(3600).timeIntervalSince1970
+                    let segEnd = min(p.end, nextHour)
+                    lib.hourlyTotals[hour, default: 0] += segEnd - t
+                    t = segEnd
+                }
+                // volume buckets by the portion's dB
+                let idx: Int
+                switch p.db {
+                case ..<60: idx = 0
+                case ..<70: idx = 1
+                case ..<80: idx = 2
+                case ..<85: idx = 3
+                case ..<90: idx = 4
+                default: idx = 5
+                }
+                buckets[idx].seconds += p.duration
+            }
+        }
+        lib.volumeBuckets = buckets
+        if let best = lib.dailyTotals.max(by: { $0.value < $1.value }) {
+            lib.longestDay = (best.key, best.value)
+        }
+        lib.longestSession = sessions.max(by: { $0.duration < $1.duration })
+        if let best = monthlyMap.max(by: { $0.value < $1.value }) {
+            lib.bestMonth = (best.key, best.value)
+        }
+        // longest streak of consecutive days with any listening
+        let days = lib.dailyTotals.keys.sorted()
+        var bestRun = 0, run = 0
+        var bestFrom = "", bestTo = "", runFrom = ""
+        var prev: Date? = nil
+        for key in days {
+            let date = dayDate(key)
+            if let pv = prev, let dt = date,
+               calendar.dateComponents([.day], from: pv, to: dt).day == 1 {
+                run += 1
+            } else {
+                run = 1
+                runFrom = key
+            }
+            if run > bestRun {
+                bestRun = run
+                bestFrom = runFrom
+                bestTo = key
+            }
+            prev = date
+        }
+        if bestRun > 0 { lib.longestStreak = (bestRun, bestFrom, bestTo) }
+        return lib
     }
 
     private func dayKey(_ date: Date) -> String {
         let c = calendar.dateComponents([.year, .month, .day], from: date)
         return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
+    }
+
+    private func dayDate(_ key: String) -> Date? {
+        let parts = key.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return nil }
+        var c = DateComponents()
+        c.year = parts[0]; c.month = parts[1]; c.day = parts[2]
+        return calendar.date(from: c)
     }
 
     private func monthKey(_ date: Date) -> String {

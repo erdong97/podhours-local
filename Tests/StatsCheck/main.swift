@@ -35,7 +35,10 @@ let samples: [RawSample] = [
 ]
 
 let engine = StatsEngine(timeZone: TimeZone(secondsFromGMT: 8 * 3600)!)
-let (devices, combined) = engine.compute(samples: samples)
+let computed = engine.compute(samples: samples)
+let devices = computed.devices
+let combined = computed.combined
+let library = computed.library
 
 check("device count == 2", devices.count == 2, "got \(devices.count)")
 let airpods = devices.first { $0.displayName == "AirPods Pro" }
@@ -59,6 +62,29 @@ check("Combined avg 74.8 dB", approx(combined.avgDb, 74.8, tol: 0.06), "got \(co
 check("Combined sessions == 3", combined.sessionCount == 3, "got \(combined.sessionCount)")
 check("Combined active days == 4", combined.activeDayCount == 4, "got \(combined.activeDayCount)")
 check("Combined daily avg 2400s", approx(combined.dailyAvgSeconds, 2400), "got \(combined.dailyAvgSeconds)")
+
+// Library aggregates (trends & records)
+let dailySum = library.dailyTotals.values.reduce(0, +)
+check("Daily totals sum 12000s", approx(dailySum, 12000), "got \(dailySum)")
+check("Longest day 2024-01-01 / 7170s",
+      library.longestDay?.day == "2024-01-01" && approx(library.longestDay?.seconds ?? -1, 7170),
+      "got \(String(describing: library.longestDay))")
+check("Longest session 7170s on AirPods",
+      approx(library.longestSession?.duration ?? -1, 7170) && library.longestSession?.deviceName == "AirPods Pro",
+      "got \(String(describing: library.longestSession?.duration))")
+check("Longest streak 3 days", library.longestStreak?.days == 3, "got \(String(describing: library.longestStreak?.days))")
+check("Best month 2024-01 / 12000s",
+      library.bestMonth?.month == "2024-01" && approx(library.bestMonth?.seconds ?? -1, 12000),
+      "got \(String(describing: library.bestMonth))")
+let hourlySum = library.hourlyTotals.values.reduce(0, +)
+check("Hourly totals sum 12000s", approx(hourlySum, 12000), "got \(hourlySum)")
+check("Hour 10 == 3600s", approx(library.hourlyTotals[10] ?? -1, 3600), "got \(library.hourlyTotals[10] ?? -1)")
+check("Hour 11 == 3570s", approx(library.hourlyTotals[11] ?? -1, 3570), "got \(library.hourlyTotals[11] ?? -1)")
+let bucketSum = library.volumeBuckets.reduce(0) { $0 + $1.seconds }
+check("Volume buckets sum 12000s", approx(bucketSum, 12000), "got \(bucketSum)")
+check("Bucket 60-70 == 2970s", approx(library.volumeBuckets[1].seconds, 2970), "got \(library.volumeBuckets[1].seconds)")
+check("Bucket 70-80 == 7200s", approx(library.volumeBuckets[2].seconds, 7200), "got \(library.volumeBuckets[2].seconds)")
+check("Combined avg session 3990s", approx(combined.avgSessionSeconds, 3990), "got \(combined.avgSessionSeconds)")
 
 print(failures == 0 ? "ALL CHECKS PASSED" : "\(failures) CHECK(S) FAILED")
 exit(failures == 0 ? 0 : 1)
